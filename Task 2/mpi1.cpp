@@ -18,7 +18,14 @@ double GetScalarProduct(const std::vector<double> & v1, const std::vector<double
 
 double GetSquaredNorm(const std::vector<double> & vec)
 {
-    return std::sqrt(GetScalarProduct(vec, vec));
+    double norm = 0.0;
+
+    for (int i = 0; i < vec.size(); i++)
+    {
+        norm += vec[i] * vec[i];
+    }
+
+    return norm;
 }
 
 void SetTest(
@@ -133,26 +140,27 @@ int main(int argc, char *argv[])
     std::vector<double> tempVector(localSize, 0.0);
 
     auto normB = GetSquaredNorm(b);
-    double cond = epsilon + 1.0;
+    double cond = 0.0;
     int iterations = 0;
+
+    // умножаем кусок матрицы А на вектор х
+    dgemv(aLocal, x, tempVector);
+
+    for (int i = 0; i < localSize; i++)
+    {
+        yLocal[i] = tempVector[i] - bLocal[i];
+    }
+
+    MPI_Allgatherv(
+        yLocal.data(), localSize, MPI_DOUBLE, y.data(),
+        localSizes.data(), displs.data(),
+        MPI_DOUBLE, MPI_COMM_WORLD
+    );
+
+    cond = GetSquaredNorm(y) / normB;
 
     while (cond > epsilon && iterations++ < maxIterations)
     {
-        // умножаем кусок матрицы А на вектор х
-        dgemv(aLocal, x, tempVector);
-
-        for (int i = 0; i < localSize; i++)
-        {
-            yLocal[i] = tempVector[i] - bLocal[i];
-        }
-
-        // собираем вектор y
-        MPI_Allgatherv(
-            yLocal.data(), localSize, MPI_DOUBLE, y.data(),
-            localSizes.data(), displs.data(),
-            MPI_DOUBLE, MPI_COMM_WORLD
-        );
-
         dgemv(aLocal, y, tempVector);
 
         auto localNumerator = GetScalarProduct(yLocal, tempVector);
@@ -163,11 +171,17 @@ int main(int argc, char *argv[])
 
         MPI_Allreduce(&localNumerator, &numerator, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&localDenominator, &denominator, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
         double tau = numerator / denominator;
 
         for (int i = 0; i < localSize; i++) 
         {
             xLocal[i] -= tau * yLocal[i];
+        }
+
+        if (rank == 0 && iterations == 2)
+        {
+            std::cout << "tau = " << tau << std::endl;
         }
 
         MPI_Allgatherv(
@@ -176,13 +190,27 @@ int main(int argc, char *argv[])
             MPI_DOUBLE, MPI_COMM_WORLD
         );
         
+        // умножаем кусок матрицы А на вектор х
+        dgemv(aLocal, x, tempVector);
+
+        for (int i = 0; i < localSize; i++)
+        {
+            yLocal[i] = tempVector[i] - bLocal[i];
+        }
+
+        MPI_Allgatherv(
+            yLocal.data(), localSize, MPI_DOUBLE, y.data(),
+            localSizes.data(), displs.data(),
+            MPI_DOUBLE, MPI_COMM_WORLD
+        );
+
         // обновляем условие остановки
         cond = GetSquaredNorm(y) / normB;
     }
 
     if (rank == 0)
     {
-        std::cout << "Elapsed time " << MPI_Wtime() - startTime << std::endl;
+        std::cout << std::endl << "Elapsed time " << MPI_Wtime() - startTime << std::endl;
         PrintVector(x);
     }
 
